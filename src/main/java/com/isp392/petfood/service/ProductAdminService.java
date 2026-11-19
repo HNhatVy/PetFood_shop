@@ -1,0 +1,649 @@
+package com.isp392.petfood.service;
+
+import com.isp392.petfood.dto.ProductAdminRow;
+import com.isp392.petfood.dto.ProductDetailDto;
+import com.isp392.petfood.dto.ProductForm;
+import com.isp392.petfood.dto.ProductGroupDto;
+import com.isp392.petfood.dto.ProductOption;
+import com.isp392.petfood.dto.ProductVariantDto;
+import com.isp392.petfood.dto.StockSummary;
+import com.isp392.petfood.entity.Category;
+import com.isp392.petfood.entity.Lot;
+import com.isp392.petfood.entity.Product;
+import com.isp392.petfood.entity.ProductImage;
+import com.isp392.petfood.enums.ProductStatus;
+import com.isp392.petfood.enums.Species;
+import com.isp392.petfood.enums.StockStatus;
+import com.isp392.petfood.exception.BusinessRuleException;
+import com.isp392.petfood.exception.InvalidImageException;
+import com.isp392.petfood.exception.NotFoundException;
+import com.isp392.petfood.repository.CategoryRepository;
+import com.isp392.petfood.repository.LotRepository;
+import com.isp392.petfood.repository.LotRepository.StockSummaryRow;
+import com.isp392.petfood.repository.ProductImageRepository;
+import com.isp392.petfood.repository.ProductRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import static com.isp392.petfood.dto.ProductForm.IMAGE_COUNT;
+
+// Quản lý sản phẩm của Staff/Admin (FR-10): thêm kèm 1–5 ảnh, sửa, thay ảnh, ẩn/hiện, xoá sản phẩm chưa phát sinh dữ liệu.
+// Khác ProductService: class đó chỉ phục vụ trang khách (chỉ đọc).
+@Service
+@RequiredArgsConstructor
+public class ProductAdminService {
+
+    private static final int PAGE_SIZE = 20;
+    private static final long MAX_IMAGE_BYTES = 5L * 1024 * 1024;   // khớp spring.servlet.multipart.max-file-size
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+
+    private static final Pattern SPEC_PATTERN = Pattern.compile(
+            "(?i)(?:[\\s–-]+(?:vị\\s+[^\\d]+)?[\\s(]*(\\d+(?:[.,]\\d+)?\\s*(?:kg|g|gr|ml|l|hộp|gói|lon|bao|túi|can|viên|miếng|thùng|pcs))[)]?\\s*)$"
+    );
+
+    private final ProductRepository productRepository;
+    private final CategoryRepository categoryRepository;
+    private final ProductImageRepository productImageRepository;
+    private final LotRepository lotRepository;
+    private final LotService lotService;
+    private final InventoryPolicy inventoryPolicy;
+    private final ProductImageProcessor imageProcessor;
+    private final ProductImageStorage imageStorage;
+
+    // =====================================================================
+    // ĐỌC
+    // =====================================================================
+
+    // pageNumber tính từ 0. Sản phẩm mới thêm đứng đầu.
+    @Transactional(readOnly = true)
+    public Page<ProductAdminRow> search(String keyword, Long categoryId, Species species,
+                                        ProductStatus status, int pageNumber) {
+        Pageable pageable = PageRequest.of(pageNumber, PAGE_SIZE, Sort.by(Sort.Direction.DESC, "id"));
+        Page<Product> products = productRepository.search(keyword, categoryId, species, status, pageable);
+
+        List<Long> ids = products.getContent().stream().map(Product::getId).toList();
+        Map<Long, StockSummary> stock = loadStock(ids);
+        return products.map(p -> new ProductAdminRow(p, stock.getOrDefault(p.getId(), StockSummary.EMPTY)));
+    }
+
+    // Gom nhóm các sản phẩm thành dòng sản phẩm cha và các biến thể (Master-Detail Accordion).
+    // stockStatus != null: chỉ giữ biến thể đúng tình trạng hàng đó; dòng không còn biến thể nào thì bỏ.
+    @Transactional(readOnly = true)
+    public List<ProductGroupDto> getProductGroups(String keyword, Long categoryId, Species species, ProductStatus status,
+                                                  StockStatus stockStatus) {
+        Pageable pageable = Pageable.unpaged(Sort.by(Sort.Direction.DESC, "id"));
+        Page<Product> page = productRepository.search(keyword, categoryId, species, status, pageable);
+        List<Product> products = page.getContent();
+
+        List<Long> ids = products.stream().map(Product::getId).toList();
+        Map<Long, StockSummary> stock = loadStock(ids);
+
+        // Lấy danh sách các đợt hàng (Lot) đang còn tồn của từng biến thể để hiển thị và chặn nhập trùng HSD
+        Map<Long, List<Lot>> activeLotsByProduct = new HashMap<>();
+        if (!ids.isEmpty()) {
+            for (Lot l : lotRepository.findByProduct_IdInAndOnHandQtyGreaterThanOrderByExpiryDateAscIdAsc(ids, 0)) {
+                if (!LotService.isDisposed(l.getId()) && l.getExpiryDate() != null) {
+                    activeLotsByProduct.computeIfAbsent(l.getProduct().getId(), k -> new ArrayList<>()).add(l);
+                }
+            }
+        }
+
+        Map<String, ProductGroupDto> groupMap = new LinkedHashMap<>();
+
+        for (Product p : products) {
+            StockSummary ss = stock.getOrDefault(p.getId(), StockSummary.EMPTY);
+            StockStatus variantStock = StockStatus.of(ss.getSellableQty(), ss.getFlashSaleQty(), p.getLowStockThreshold());
+            if (stockStatus != null && variantStock != stockStatus) {
+                continue;
+            }
+
+            // Tên gốc (bỏ quy cách ở cuối tên) để đặt tên nhóm; quy cách lấy thẳng từ cột variant
+            String fullName = p.getName() != null ? p.getName().trim() : "";
+            String baseName = baseName(fullName);
+            String spec = p.getVariant();
+
+            // Các quy cách của cùng một dòng sản phẩm có chung mã sản phẩm (05 -> 400G, 2000G)
+            String baseSku = p.getSku();
+            String groupKey = baseSku.toLowerCase(Locale.ROOT);
+
+            ProductGroupDto group = groupMap.get(groupKey);
+            if (group == null) {
+                group = new ProductGroupDto();
+                group.setGroupId(groupKey.replaceAll("[^a-z0-9_-]", "-"));
+                group.setBaseName(baseName);
+                group.setBaseSku(baseSku);
+                group.setBrand(p.getBrand());
+                group.setCategoryName(p.getCategory() != null ? p.getCategory().getName() : "");
+                group.setSpecies(p.getSpecies());
+                group.setAgeGroup(p.getAgeGroup());
+                group.setImageUrl(p.getImageUrl());
+                groupMap.put(groupKey, group);
+            }
+
+            List<Lot> activeLots = activeLotsByProduct.getOrDefault(p.getId(), List.of());
+            String existingExpiriesIso = activeLots.stream()
+                    .map(l -> l.getExpiryDate().toString())
+                    .distinct()
+                    .collect(Collectors.joining(","));
+            String existingExpiriesDisplay = activeLots.stream()
+                    .map(l -> l.getExpiryDate().format(DATE_FMT) + " (" + l.getOnHandQty() + " sp)")
+                    .collect(Collectors.joining(", "));
+
+            ProductVariantDto variant = ProductVariantDto.builder()
+                    .id(p.getId())
+                    .sku(p.getFullSku())
+                    .name(p.getName())
+                    .spec(spec)
+                    .sellingPrice(p.getSellingPrice())
+                    .status(p.getStatus())
+                    .imageUrl(p.getImageUrl())
+                    .lowStockThreshold(p.getLowStockThreshold())
+                    .onHandQty(ss.getOnHandQty())
+                    .sellableQty(ss.getSellableQty())
+                    .flashSaleQty(ss.getFlashSaleQty())
+                    .stockStatus(variantStock)
+                    .existingExpiriesIso(existingExpiriesIso)
+                    .existingExpiriesDisplay(existingExpiriesDisplay)
+                    .build();
+
+            group.getVariants().add(variant);
+
+            // Cập nhật thống kê nhóm
+            if (group.getMinPrice() == null || (variant.getSellingPrice() != null && variant.getSellingPrice().compareTo(group.getMinPrice()) < 0)) {
+                group.setMinPrice(variant.getSellingPrice());
+            }
+            if (group.getMaxPrice() == null || (variant.getSellingPrice() != null && variant.getSellingPrice().compareTo(group.getMaxPrice()) > 0)) {
+                group.setMaxPrice(variant.getSellingPrice());
+            }
+            group.setTotalOnHand(group.getTotalOnHand() + variant.getOnHandQty());
+            group.setTotalSellable(group.getTotalSellable() + variant.getSellableQty());
+            group.setTotalFlashSale(group.getTotalFlashSale() + variant.getFlashSaleQty());
+            if (variant.getStatus() == ProductStatus.ACTIVE) {
+                group.setActiveCount(group.getActiveCount() + 1);
+                // Chỉ nhắc với biến thể đang bán (BR-62); biến thể ngừng kinh doanh thì không cần
+                if (variantStock == StockStatus.LOW_STOCK) {
+                    group.setAnyLowStock(true);
+                } else if (variantStock == StockStatus.FLASH_SALE_ONLY) {
+                    group.setAnyFlashSaleOnly(true);
+                } else if (variantStock == StockStatus.OUT_OF_STOCK) {
+                    group.setAnyOutOfStock(true);
+                }
+            } else {
+                group.setDiscontinuedCount(group.getDiscontinuedCount() + 1);
+            }
+            if ((group.getImageUrl() == null || group.getImageUrl().isBlank()) && variant.getImageUrl() != null) {
+                group.setImageUrl(variant.getImageUrl());
+            }
+        }
+
+        // Sắp xếp các biến thể trong từng nhóm theo giá tăng dần (vd: 400g trước, 2kg sau)
+        for (ProductGroupDto g : groupMap.values()) {
+            if (g.getImageUrl() != null && !g.getImageUrl().isBlank()) {
+                for (ProductVariantDto v : g.getVariants()) {
+                    if (v.getImageUrl() == null || v.getImageUrl().isBlank()) {
+                        v.setImageUrl(g.getImageUrl());
+                    }
+                }
+            }
+            g.getVariants().sort((v1, v2) -> {
+                if (v1.getSellingPrice() == null) return -1;
+                if (v2.getSellingPrice() == null) return 1;
+                return v1.getSellingPrice().compareTo(v2.getSellingPrice());
+            });
+        }
+
+        return new ArrayList<>(groupMap.values());
+    }
+
+
+    @Transactional(readOnly = true)
+    public ProductDetailDto getDetail(Long id) {
+        Product product = productRepository.findWithCategoryById(id)
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy sản phẩm #" + id));
+        List<ProductImage> images = productImageRepository.findByProduct_IdOrderBySortOrderAsc(id);
+        if (images.isEmpty() && product.getSku() != null && !product.getSku().isBlank()) {
+            List<ProductImage> skuImages = productImageRepository.findByProduct_SkuOrderByProduct_IdAscSortOrderAsc(product.getSku());
+            Map<Integer, ProductImage> bySlot = new LinkedHashMap<>();
+            for (ProductImage img : skuImages) {
+                bySlot.putIfAbsent(img.getSortOrder(), img);
+            }
+            images = new ArrayList<>(bySlot.values());
+        }
+        if ((product.getImageUrl() == null || product.getImageUrl().isBlank())
+                && product.getSku() != null && !product.getSku().isBlank()) {
+            for (Product sibling : productRepository.findBySkuOrderByIdAsc(product.getSku())) {
+                if (sibling.getImageUrl() != null && !sibling.getImageUrl().isBlank()) {
+                    product.setImageUrl(sibling.getImageUrl());
+                    break;
+                }
+            }
+        }
+        StockSummary stock = loadStock(List.of(id)).getOrDefault(id, StockSummary.EMPTY);
+        return new ProductDetailDto(product, images, stock);
+    }
+
+    @Transactional(readOnly = true)
+    public ProductForm getForm(Long id) {
+        return ProductForm.from(findOrThrow(id));
+    }
+
+    // Form "Thêm biến thể" (/staff/products/new?variantOf=..): điền sẵn thông tin chung của sản phẩm gốc,
+    // giữ nguyên mã sản phẩm của dòng, tên bỏ phần quy cách, nhân viên chỉ nhập biến thể mới.
+    // Ảnh để trống thì lấy ảnh sản phẩm gốc (xem create).
+    @Transactional(readOnly = true)
+    public ProductForm buildVariantForm(Long parentId) {
+        Product parent = findOrThrow(parentId);
+        ProductForm form = new ProductForm();
+        form.setVariantOf(parentId);
+        String baseName = baseName(parent.getName());
+        form.setName(baseName.isEmpty() ? "" : baseName + " ");
+        form.setSku(parent.getSku());
+        form.setCategoryId(parent.getCategory() != null ? parent.getCategory().getId() : null);
+        form.setBrand(parent.getBrand());
+        form.setSpecies(parent.getSpecies());
+        form.setAgeGroup(parent.getAgeGroup());
+        form.setDescription(parent.getDescription());
+        form.setSellingPrice(parent.getSellingPrice());
+        form.setLowStockThreshold(parent.getLowStockThreshold());
+        form.setStatus(ProductStatus.ACTIVE);
+        return form;
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProductOption> listOptions() {
+        return productRepository.findAllByOrderBySkuAscVariantAsc().stream().map(ProductOption::new).toList();
+    }
+
+    // =====================================================================
+    // THÊM: Product + 1–5 ProductImage + lô đầu tiên (số lượng + HSD bắt buộc) trong CÙNG một transaction.
+    // Màn hình không còn trang nhập lô riêng: hàng chỉ vào hệ thống qua bước thêm sản phẩm / thêm biến thể.
+    // Thiếu/lỗi ảnh nào thì không lưu gì cả (ghi chú 1 trong FoodPetShop_ProductImage.sql).
+    // =====================================================================
+    @Transactional
+    public Product create(ProductForm form) {
+        // 1. Kiểm tra hết rồi báo lỗi một lần, nhân viên sửa một lượt là xong
+        // Mã sản phẩm không lấy từ form: biến thể dùng mã của sản phẩm gốc, dòng mới được cấp số khi lưu (bước 2)
+        form.setSku(form.getVariantOf() != null ? findOrThrow(form.getVariantOf()).getSku() : null);
+
+        Map<String, String> errors = new LinkedHashMap<>();
+        Category category = checkCategory(form, errors);
+        checkUnique(form, null, errors);
+        checkFirstLot(form, errors);
+        // 1–5 ảnh, bắt buộc ảnh 1 (ảnh đại diện); riêng biến thể thì ô bỏ trống lấy ảnh cùng vị trí của sản phẩm gốc
+        Map<Integer, byte[]> images = processImages(form, errors);
+        if (form.getVariantOf() != null) {
+            inheritImages(form.getVariantOf(), images, errors);
+        }
+        requireCoverImage(images.containsKey(1), errors);
+        if (!errors.isEmpty()) {
+            throw new BusinessRuleException(errors);
+        }
+
+        // 2. Lưu Product trước để có product_id. saveAndFlush đẩy INSERT xuống DB ngay,
+        //    nếu mã vừa bị người khác dùng thì UNIQUE báo lỗi ở đây, trước khi ghi file ảnh.
+        if (form.getSku() == null) {
+            form.setSku(nextProductCode());
+        }
+        Product product = new Product();
+        product.setSku(form.getSku());
+        copy(form, category, product);
+        saveAndFlush(product);
+
+        // 3. Ghi file ảnh + dòng ProductImage cho các vị trí có ảnh (giữ đúng vị trí đã chọn). Nếu bước sau lỗi,
+        //    transaction rollback và ProductImageStorage tự xoá các file vừa ghi.
+        List<ProductImage> rows = new ArrayList<>();
+        for (Map.Entry<Integer, byte[]> entry : images.entrySet()) {
+            String url = imageStorage.save(product.getFullSku(), entry.getKey(), entry.getValue());
+            rows.add(new ProductImage(product, entry.getKey(), url));
+        }
+        productImageRepository.saveAll(rows);
+        product.setImageUrl(rows.get(0).getImageUrl());     // ảnh đại diện = ảnh số 1
+
+        // 4. Lô đầu tiên: số lượng + HSD nhập cùng form (đã kiểm tra ở checkFirstLot)
+        lotService.receive(product, form.getFirstLotExpiryDate(), form.getFirstLotQty());
+        return product;
+    }
+
+    // =====================================================================
+    // SỬA: cập nhật thông tin; ảnh nào được chọn lại thì thay đúng vị trí đó (UPDATE image_url, không xoá dòng).
+    // =====================================================================
+    @Transactional
+    public Product update(Long id, ProductForm form) {
+        Product product = findOrThrow(id);
+        form.setSku(product.getSku());          // mã sản phẩm do hệ thống cấp, không cho sửa
+
+        Map<String, String> errors = new LinkedHashMap<>();
+        Category category = checkCategory(form, errors);
+        checkUnique(form, id, errors);
+        Map<Integer, byte[]> newImages = processImages(form, errors);  // chỉ các ô có chọn file
+
+        // Sau khi sửa vẫn phải có ảnh 1 (ảnh đại diện); vị trí 2–5 được để trống
+        Map<Integer, ProductImage> currentBySlot = new HashMap<>();
+        for (ProductImage image : productImageRepository.findByProduct_IdOrderBySortOrderAsc(id)) {
+            currentBySlot.put(image.getSortOrder(), image);
+        }
+        if (!errors.containsKey("image1")) {
+            requireCoverImage(currentBySlot.containsKey(1) || newImages.containsKey(1), errors);
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessRuleException(errors);
+        }
+
+        copy(form, category, product);
+        saveAndFlush(product);
+
+        for (Map.Entry<Integer, byte[]> entry : newImages.entrySet()) {
+            int slot = entry.getKey();
+            String url = imageStorage.save(product.getFullSku(), slot, entry.getValue());
+            ProductImage row = currentBySlot.get(slot);
+            if (row == null) {
+                currentBySlot.put(slot, productImageRepository.save(new ProductImage(product, slot, url)));
+            } else {
+                imageStorage.deleteAfterCommit(row.getImageUrl());   // file cũ chỉ xoá khi đã commit thành công
+                row.setImageUrl(url);
+            }
+        }
+        product.setImageUrl(currentBySlot.get(1).getImageUrl());  // luôn đồng bộ với ảnh số 1
+        return product;
+    }
+
+    // Ẩn / hiện: ACTIVE <-> DISCONTINUED. Sản phẩm ngừng kinh doanh không hiện ở trang khách.
+    @Transactional
+    public Product toggleStatus(Long id) {
+        Product product = findOrThrow(id);
+        product.setStatus(product.getStatus() == ProductStatus.ACTIVE
+                ? ProductStatus.DISCONTINUED
+                : ProductStatus.ACTIVE);
+        return product;
+    }
+
+    // Thêm số lượng cho biến thể kèm Hạn sử dụng (HSD) mới:
+    // - Tạo một đợt hàng (Lot) riêng để khi đưa đợt cận hạn vào Flash Sale / Khuyến mãi thì không ảnh hưởng các đợt khác.
+    // - HSD mới bắt buộc phải sau hôm nay và KHÁC với các HSD đang còn hàng của biến thể này.
+    // - Trên màn hình Quản lý sản phẩm, số lượng các đợt của cùng biến thể sẽ tự động được cộng gộp chung với nhau.
+    @Transactional
+    public Lot addStock(Long productId, Integer quantity, LocalDate expiryDate) {
+        Product product = findOrThrow(productId);
+        if (quantity == null || quantity < 1) {
+            throw new BusinessRuleException("Vui lòng nhập số lượng thêm vào từ 1 sản phẩm trở lên.");
+        }
+        if (expiryDate == null) {
+            throw new BusinessRuleException("Vui lòng chọn hạn sử dụng cho số lượng thêm mới.");
+        }
+        if (!expiryDate.isAfter(inventoryPolicy.today())) {
+            throw new BusinessRuleException("Hạn sử dụng phải sau ngày hôm nay (" + inventoryPolicy.today().format(DATE_FMT) + ").");
+        }
+
+        List<Lot> existingActiveLots = lotRepository.findByProduct_IdOrderByExpiryDateAscIdAsc(productId).stream()
+                .filter(l -> l.getOnHandQty() != null && l.getOnHandQty() > 0 && !LotService.isDisposed(l.getId()))
+                .toList();
+
+        for (Lot existing : existingActiveLots) {
+            if (expiryDate.equals(existing.getExpiryDate())) {
+                throw new BusinessRuleException("Hạn sử dụng " + expiryDate.format(DATE_FMT)
+                        + " đã trùng với đợt hàng hiện có của biến thể " + product.getFullSku()
+                        + ". Vui lòng chọn hạn sử dụng khác để khi thêm Flash Sale không bị ảnh hưởng lẫn nhau.");
+            }
+        }
+
+        Lot lot = new Lot();
+        lot.setProduct(product);
+        lot.setExpiryDate(expiryDate);
+        lot.setReceivedQty(quantity);
+        lot.setOnHandQty(quantity);
+        return lotRepository.save(lot);
+    }
+
+    // Xoá hẳn: chỉ cho sản phẩm tạo nhầm, chưa bán ra đơn vị nào (mọi lô còn nguyên số lượng đã nhập)
+    // và chưa có đơn hàng / giỏ hàng / đánh giá / Flash Sale (BR-11). Lô đầu tiên tạo cùng sản phẩm bị xoá theo.
+    // Trả về mã sản phẩm để controller báo lại.
+    @Transactional
+    public String delete(Long id) {
+        Product product = findOrThrow(id);
+        List<Lot> lots = lotRepository.findByProduct_IdOrderByExpiryDateAscIdAsc(id);
+        if (!isDeletable(lots)) {
+            throw new BusinessRuleException("Sản phẩm " + product.getFullSku()
+                    + " đã bán ra nên không xoá được. Hãy chuyển sang Ngừng kinh doanh.");
+        }
+        List<ProductImage> images = productImageRepository.findByProduct_IdOrderBySortOrderAsc(id);
+        lotRepository.deleteAll(lots);                  // bảng con trước, bảng cha sau
+        productImageRepository.deleteAll(images);
+        productRepository.delete(product);
+        try {
+            productRepository.flush();
+        } catch (DataIntegrityViolationException e) {
+            // CartItem / OrderItem / ProductReview / FlashSaleItem... còn trỏ tới sản phẩm (khoá ngoại NO ACTION)
+            throw new BusinessRuleException("Sản phẩm " + product.getFullSku()
+                    + " đã phát sinh dữ liệu khác (giỏ hàng, đơn hàng, đánh giá, Flash Sale...) nên không xoá được. "
+                    + "Hãy chuyển sang Ngừng kinh doanh.");
+        }
+        images.forEach(image -> imageStorage.deleteAfterCommit(image.getImageUrl()));
+        return product.getFullSku();
+    }
+
+    // Trang chi tiết dùng để quyết định có hiện nút Xoá hay không (service vẫn kiểm tra lại khi xoá)
+    @Transactional(readOnly = true)
+    public boolean isDeletable(Long id) {
+        return isDeletable(lotRepository.findByProduct_IdOrderByExpiryDateAscIdAsc(id));
+    }
+
+    private static boolean isDeletable(List<Lot> lots) {
+        return lots.stream().allMatch(Lot::isUntouched);
+    }
+
+    // =====================================================================
+    // KIỂM TRA
+    // =====================================================================
+
+    // Danh mục phải tồn tại; danh mục DOG/CAT chỉ chứa sản phẩm đúng loài đó, ALL chứa cả hai
+    private Category checkCategory(ProductForm form, Map<String, String> errors) {
+        Category category = categoryRepository.findById(form.getCategoryId()).orElse(null);
+        if (category == null) {
+            errors.put("categoryId", "Danh mục không tồn tại");
+            return null;
+        }
+        if (!category.getPetType().accepts(form.getSpecies())) {
+            errors.put("species", "Danh mục \"" + category.getName() + "\" chỉ dành cho "
+                    + category.getPetType().getLabel().toLowerCase(Locale.ROOT)
+                    + ", hãy chọn đúng loài hoặc đổi danh mục");
+        }
+        return category;
+    }
+
+    // (mã sản phẩm, biến thể) duy nhất (BR-08). excludeId = id sản phẩm đang sửa.
+    // Dòng sản phẩm mới chưa có mã (sku null) thì không thể trùng: số được cấp mới khi lưu.
+    private void checkUnique(ProductForm form, Long excludeId, Map<String, String> errors) {
+        if (form.getSku() == null || form.getVariant() == null) {
+            return;
+        }
+        // mã đầy đủ dùng làm tên thư mục ảnh, DB chặn > 50 ký tự (CK_Product_variant)
+        if (form.getFullSku().length() > 50) {
+            errors.put("variant", "Mã sản phẩm + biến thể (" + form.getFullSku() + ") dài quá 50 ký tự");
+            return;
+        }
+        boolean skuTaken = (excludeId == null)
+                ? productRepository.existsBySkuAndVariant(form.getSku(), form.getVariant())
+                : productRepository.existsBySkuAndVariantAndIdNot(form.getSku(), form.getVariant(), excludeId);
+        if (skuTaken) {
+            errors.put("variant", "Mã sản phẩm " + form.getSku() + " đã có biến thể " + form.getVariant()
+                    + " (" + form.getFullSku() + ")");
+        }
+    }
+
+    // Lô đầu tiên: bắt buộc nhập số lượng + HSD khi thêm sản phẩm; sản phẩm phải đang bán mới nhận hàng được.
+    // Câu báo lỗi hiện ngay trên form nên không dùng chữ "lô" / "kho".
+    private void checkFirstLot(ProductForm form, Map<String, String> errors) {
+        if (form.getFirstLotExpiryDate() == null) {
+            errors.put("firstLotExpiryDate", "Vui lòng nhập hạn sử dụng");
+        } else {
+            String problem = lotService.expiryProblemForNewLot(form.getFirstLotExpiryDate());
+            if (problem != null) {
+                errors.put("firstLotExpiryDate", problem);
+            }
+        }
+        if (form.getFirstLotQty() == null) {
+            errors.put("firstLotQty", "Vui lòng nhập số lượng");
+        }
+        if (form.getStatus() != ProductStatus.ACTIVE) {
+            errors.put("status", "Sản phẩm thêm mới phải ở trạng thái Đang bán");
+        }
+    }
+
+    // Mỗi sản phẩm cần ít nhất ảnh 1 (ảnh đại diện); ảnh 2–5 không bắt buộc
+    private static void requireCoverImage(boolean hasCover, Map<String, String> errors) {
+        if (!hasCover) {
+            errors.putIfAbsent("image1", "Chưa chọn ảnh số 1 (ảnh đại diện)");
+        }
+    }
+
+    // Chuẩn hoá các ảnh đã chọn. Trả về Map vị trí -> nội dung JPG; ảnh lỗi được ghi vào errors với tên ô image1..image5.
+    private Map<Integer, byte[]> processImages(ProductForm form, Map<String, String> errors) {
+        Map<Integer, byte[]> result = new TreeMap<>();
+        List<MultipartFile> files = form.imagesBySlot();
+        for (int slot = 1; slot <= IMAGE_COUNT; slot++) {
+            MultipartFile file = files.get(slot - 1);
+            String field = "image" + slot;
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+            if (file.getSize() > MAX_IMAGE_BYTES) {
+                errors.put(field, "Ảnh số " + slot + " lớn hơn 5MB");
+                continue;
+            }
+            try {
+                result.put(slot, imageProcessor.toJpeg(file.getBytes()));
+            } catch (InvalidImageException e) {
+                errors.put(field, "Ảnh số " + slot + ": " + e.getMessage());
+            } catch (IOException e) {
+                errors.put(field, "Không đọc được file ảnh số " + slot);
+            }
+        }
+        return result;
+    }
+
+    // Chép nội dung ảnh của sản phẩm gốc vào các vị trí nhân viên chưa chọn file. Ghi thành file mới theo SKU
+    // của biến thể (không dùng chung URL): sửa / thay ảnh sản phẩm gốc sau này không ảnh hưởng biến thể.
+    private void inheritImages(Long parentId, Map<Integer, byte[]> images, Map<String, String> errors) {
+        Product parent = findOrThrow(parentId);                 // sản phẩm gốc phải còn tồn tại
+        Map<Integer, String> parentUrls = new HashMap<>();
+        for (ProductImage image : productImageRepository.findByProduct_IdOrderBySortOrderAsc(parentId)) {
+            parentUrls.put(image.getSortOrder(), image.getImageUrl());
+        }
+        if (parentUrls.size() < IMAGE_COUNT && parent.getSku() != null && !parent.getSku().isBlank()) {
+            for (ProductImage image : productImageRepository.findByProduct_SkuOrderByProduct_IdAscSortOrderAsc(parent.getSku())) {
+                parentUrls.putIfAbsent(image.getSortOrder(), image.getImageUrl());
+            }
+        }
+        String fallbackUrl = parentUrls.get(1);
+        if (fallbackUrl == null || fallbackUrl.isBlank()) {
+            fallbackUrl = parent.getImageUrl();
+        }
+        if ((fallbackUrl == null || fallbackUrl.isBlank()) && parent.getSku() != null && !parent.getSku().isBlank()) {
+            for (Product sibling : productRepository.findBySkuOrderByIdAsc(parent.getSku())) {
+                if (sibling.getImageUrl() != null && !sibling.getImageUrl().isBlank()) {
+                    fallbackUrl = sibling.getImageUrl();
+                    break;
+                }
+            }
+        }
+        if (fallbackUrl != null && !fallbackUrl.isBlank()) {
+            parentUrls.putIfAbsent(1, fallbackUrl);
+        }
+        // Vị trí sản phẩm gốc không có ảnh thì để trống (chỉ ảnh 1 là bắt buộc, kiểm tra ở create)
+        for (int slot = 1; slot <= IMAGE_COUNT; slot++) {
+            String url = parentUrls.get(slot);
+            if (images.containsKey(slot) || errors.containsKey("image" + slot) || url == null || url.isBlank()) {
+                continue;
+            }
+            byte[] bytes = imageStorage.readBytes(url);
+            if (bytes != null) {
+                images.put(slot, bytes);
+            }
+        }
+    }
+
+    // Tên gốc của dòng sản phẩm: bỏ phần quy cách ở cuối (vd "... 400g")
+    private static String baseName(String fullName) {
+        if (fullName == null || fullName.isBlank()) {
+            return "";
+        }
+        String name = fullName.trim();
+        Matcher matcher = SPEC_PATTERN.matcher(name);
+        return matcher.find() ? name.substring(0, matcher.start()).trim() : name;
+    }
+
+    // =====================================================================
+    // HỖ TRỢ
+    // =====================================================================
+
+    private void saveAndFlush(Product product) {
+        try {
+            productRepository.saveAndFlush(product);
+        } catch (DataIntegrityViolationException e) {
+            // Hai người lưu cùng mã + biến thể gần như cùng lúc: kiểm tra exists đã qua nhưng UNIQUE của DB chặn lại
+            throw new BusinessRuleException("Mã sản phẩm và biến thể này vừa được dùng cho sản phẩm khác, hãy kiểm tra lại");
+        }
+    }
+
+    // Mã sản phẩm cho dòng mới: số lớn nhất hiện có + 1, tối thiểu 2 chữ số (01, 02 ... 99, 100).
+    // Câu lấy số giữ khoá tới hết transaction của create nên hai người tạo cùng lúc không bị trùng số.
+    private String nextProductCode() {
+        return String.format("%02d", productRepository.findMaxNumericSkuForUpdate() + 1);
+    }
+
+    private Product findOrThrow(Long id) {
+        return productRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy sản phẩm #" + id));
+    }
+
+    // Không chép mã sản phẩm (sku): create tự gán, update giữ nguyên.
+    private static void copy(ProductForm form, Category category, Product product) {
+        product.setVariant(form.getVariant());
+        product.setName(form.getName());
+        product.setBrand(form.getBrand());
+        product.setDescription(form.getDescription());
+        product.setCategory(category);
+        product.setSpecies(form.getSpecies());
+        product.setAgeGroup(form.getAgeGroup());
+        product.setSellingPrice(form.getSellingPrice());
+        product.setLowStockThreshold(form.getLowStockThreshold());
+        product.setStatus(form.getStatus());
+    }
+
+    // productId -> (tồn thực tế, tồn bán thường, tồn chỉ bán qua Flash Sale), 1 câu query cho cả danh sách
+    private Map<Long, StockSummary> loadStock(List<Long> productIds) {
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return lotRepository.summarizeStock(productIds, inventoryPolicy.minSellableExpiry(),
+                        inventoryPolicy.minFlashSaleExpiry()).stream()
+                .collect(Collectors.toMap(StockSummaryRow::getProductId,
+                        row -> new StockSummary(orZero(row.getOnHandQty()), orZero(row.getSellableQty()),
+                                orZero(row.getFlashSaleQty()))));
+    }
+
+    private static long orZero(Long value) {
+        return value == null ? 0 : value;
+    }
+}

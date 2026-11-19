@@ -1,0 +1,221 @@
+package com.isp392.petfood.service;
+
+import com.isp392.petfood.dto.ProductCardDto;
+import com.isp392.petfood.dto.ProductFilter;
+import com.isp392.petfood.dto.ProductVariantDto;
+import com.isp392.petfood.dto.CategoryOption;
+import com.isp392.petfood.dto.ShopProductDto;
+import com.isp392.petfood.entity.Category;
+import com.isp392.petfood.entity.Product;
+import com.isp392.petfood.entity.ProductImage;
+import com.isp392.petfood.enums.CategoryStatus;
+import com.isp392.petfood.enums.ProductStatus;
+import com.isp392.petfood.exception.NotFoundException;
+import com.isp392.petfood.repository.CategoryRepository;
+import com.isp392.petfood.repository.LotRepository;
+import com.isp392.petfood.repository.LotRepository.StockRow;
+import com.isp392.petfood.repository.OrderItemRepository;
+import com.isp392.petfood.repository.ProductImageRepository;
+import com.isp392.petfood.repository.ProductRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+// Phần sản phẩm phía khách (Guest/Customer): danh sách có tìm kiếm, lọc, phân trang và trang chi tiết.
+@Service
+@RequiredArgsConstructor
+public class ProductService {
+
+    private static final int PAGE_SIZE = 12;
+    private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+
+    private final ProductRepository productRepository;
+    private final LotRepository lotRepository;
+    private final ProductImageRepository productImageRepository;
+    private final CategoryRepository categoryRepository;
+    private final OrderItemRepository orderItemRepository;
+    private final InventoryPolicy inventoryPolicy;   // mốc 90 ngày dùng chung với phía Staff
+
+    // BR-12: cam kết hạn dùng tối thiểu (mặc định 90 ngày)
+    public int getShelfLifeCommitmentDays() {
+        return inventoryPolicy.getShelfLifeCommitmentDays();
+    }
+
+    // pageNumber tính từ 0 (đúng kiểu của Spring Data)
+    @Transactional(readOnly = true)
+    public Page<ProductCardDto> search(ProductFilter filter, int pageNumber) {
+        Pageable pageable = PageRequest.of(pageNumber, PAGE_SIZE, Sort.by("id"));
+
+        Page<Product> products = productRepository.searchForShop(
+                blankToNull(filter.getKeyword()),
+                filter.getCategoryId(),
+                filter.getSpecies(),
+                filter.getAgeGroup(),
+                blankToNull(filter.getBrand()),
+                filter.getMinPrice(),
+                filter.getMaxPrice(),
+                pageable);
+
+        List<Long> pageIds = products.getContent().stream().map(Product::getId).toList();
+        Map<Long, StockRow> stockByProductId = loadSellableStock(pageIds);
+        Map<Long, Long> soldByProductId = loadSoldCounts(pageIds);
+
+        // Page.map giữ nguyên thông tin phân trang, chỉ đổi kiểu phần tử Product -> ProductCardDto
+        return products.map(p -> toCard(p, stockByProductId.get(p.getId()), soldByProductId.getOrDefault(p.getId(), 0L)));
+    }
+
+    // Trang chủ "Sản phẩm bán chạy & Mới về": sản phẩm bán nhiều nhất (theo số lượng trên đơn đã giao thành công)
+    // đứng trước, chưa đủ thì thêm sản phẩm mới nhất. Ưu tiên sản phẩm còn hàng, hết hàng chỉ để lấp chỗ trống.
+    @Transactional(readOnly = true)
+    public List<ProductCardDto> featuredProducts(int limit) {
+        Set<Long> ids = new LinkedHashSet<>(orderItemRepository.findBestSellerIds(PageRequest.of(0, limit * 3)));
+        productRepository.findByStatusAndCategory_Status(ProductStatus.ACTIVE, CategoryStatus.ACTIVE,
+                        PageRequest.of(0, limit * 3, Sort.by(Sort.Direction.DESC, "createdAt", "id")))
+                .forEach(p -> ids.add(p.getId()));
+
+        Map<Long, Product> byId = productRepository.findAllById(ids).stream()
+                .collect(Collectors.toMap(Product::getId, Function.identity()));
+        Map<Long, StockRow> stockByProductId = loadSellableStock(List.copyOf(ids));
+        Map<Long, Long> soldByProductId = loadSoldCounts(List.copyOf(ids));
+        List<ProductCardDto> cards = ids.stream()
+                .map(byId::get)
+                .filter(Objects::nonNull)
+                .map(p -> toCard(p, stockByProductId.get(p.getId()), soldByProductId.getOrDefault(p.getId(), 0L)))
+                .toList();
+        return Stream.concat(cards.stream().filter(ProductCardDto::isInStock),
+                        cards.stream().filter(c -> !c.isInStock()))
+                .limit(limit)
+                .toList();
+    }
+
+    // Chi tiết sản phẩm cho khách. Sản phẩm ngừng kinh doanh hoặc thuộc danh mục ẩn thì khách không xem được (404).
+    @Transactional(readOnly = true)
+    public ShopProductDto getDetail(Long id) {
+        Product product = productRepository.findWithCategoryById(id)
+                .filter(p -> p.getStatus() == ProductStatus.ACTIVE
+                        && p.getCategory().getStatus() == CategoryStatus.ACTIVE)
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy sản phẩm #" + id));
+
+        List<String> imageUrls = productImageRepository.findByProduct_IdOrderBySortOrderAsc(id).stream()
+                .map(ProductImage::getImageUrl)
+                .toList();
+        if (imageUrls.isEmpty() && product.getImageUrl() != null) {
+            imageUrls = List.of(product.getImageUrl());     // dữ liệu cũ chưa có bảng ProductImage
+        }
+
+        StockRow stock = loadSellableStock(List.of(id)).get(id);
+        long sellableQty = stock == null ? 0 : stock.getQuantity();
+        LocalDate nearestExpiry = sellableQty > 0 ? stock.getNearestExpiry() : null;
+
+        Category category = product.getCategory();
+        return new ShopProductDto(
+                product.getId(),
+                product.getFullSku(),
+                product.getName(),
+                product.getBrand(),
+                product.getDescription(),
+                category.getId(),
+                category.getName(),
+                product.getSpecies().getLabel(),
+                product.getAgeGroup().getLabel(),
+                product.getSellingPrice(),
+                imageUrls,
+                sellableQty,
+                nearestExpiry == null ? null : nearestExpiry.format(DATE),
+                nearestExpiry == null ? null : inventoryPolicy.daysLeft(nearestExpiry));
+    }
+
+    // Lấy danh sách các quy cách / biến thể cùng dòng (cùng SKU) của sản phẩm
+    @Transactional(readOnly = true)
+    public List<ProductVariantDto> getVariants(Long currentProductId) {
+        Product current = productRepository.findById(currentProductId).orElse(null);
+        if (current == null) {
+            return List.of();
+        }
+        List<Product> variants = productRepository.findBySkuAndStatusAndCategory_StatusOrderBySellingPriceAsc(
+                current.getSku(), ProductStatus.ACTIVE, CategoryStatus.ACTIVE);
+        if (variants.size() <= 1) {
+            return List.of();
+        }
+        Map<Long, StockRow> stockMap = loadSellableStock(variants.stream().map(Product::getId).toList());
+        return variants.stream().map(p -> {
+            StockRow stock = stockMap.get(p.getId());
+            long sellableQty = stock != null ? stock.getQuantity() : 0;
+            return ProductVariantDto.builder()
+                    .id(p.getId())
+                    .sku(p.getFullSku())
+                    .name(p.getName())
+                    .spec(p.getVariant())
+                    .sellingPrice(p.getSellingPrice())
+                    .status(p.getStatus())
+                    .imageUrl(p.getImageUrl())
+                    .sellableQty(sellableQty)
+                    .build();
+        }).toList();
+    }
+
+    // ===== Dữ liệu cho các ô lọc =====
+    @Transactional(readOnly = true)
+    public List<CategoryOption> listShopCategories() {
+        return categoryRepository.findByStatusOrderByNameAsc(CategoryStatus.ACTIVE).stream()
+                .map(c -> new CategoryOption(c.getId(), c.getName()))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<String> listShopBrands() {
+        return productRepository.findShopBrands();
+    }
+
+    // productId -> tồn bán thường + HSD lô gần nhất. Sản phẩm không có lô đạt điều kiện thì không có trong map.
+    private Map<Long, StockRow> loadSellableStock(List<Long> productIds) {
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return lotRepository.sumSellableQuantity(productIds, inventoryPolicy.minSellableExpiry()).stream()
+                .collect(Collectors.toMap(StockRow::getProductId, Function.identity()));
+    }
+
+    // productId -> tổng số lượng đã bán (đơn COMPLETED). Sản phẩm chưa bán thì không có trong map.
+    private Map<Long, Long> loadSoldCounts(List<Long> productIds) {
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return orderItemRepository.sumSoldQuantity(productIds).stream()
+                .collect(Collectors.toMap(OrderItemRepository.SoldCountRow::getProductId,
+                        OrderItemRepository.SoldCountRow::getSoldQty));
+    }
+
+    private static ProductCardDto toCard(Product p, StockRow stock, long soldCount) {
+        boolean inStock = stock != null && stock.getQuantity() > 0;
+        return new ProductCardDto(
+                p.getId(),
+                p.getFullSku(),
+                p.getName(),
+                p.getBrand(),
+                p.getSellingPrice(),
+                p.getImageUrl(),
+                inStock,
+                inStock ? stock.getNearestExpiry().format(DATE) : null,
+                soldCount);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+}

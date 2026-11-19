@@ -1,0 +1,217 @@
+<%@ page pageEncoding="UTF-8" %>
+<style> 
+/* =========================================================
+   7. FOOTER STYLES (ĐẦY ĐỦ MÀU SẮC, RÕ RÀNG TRÊN MỌI TRANG)
+   ========================================================= */
+
+.footer {
+    --white: #FFFFFF;
+    --orange: #F47721;
+    margin-top: 48px;
+    padding: 48px 36px 24px;
+    background: #2C1E14 !important;
+    color: #FFFFFF !important;
+}
+
+.footer-container {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr 1.2fr 1fr;
+    gap: 36px;
+    width: 100%;
+    max-width: 1450px;
+    margin: 0 auto;
+}
+
+.footer-brand, .footer-column {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.footer-logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #F47721 !important;
+    font-size: 22px;
+    font-weight: 800;
+    text-decoration: none;
+}
+
+.footer-logo-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    color: #F47721 !important;
+}
+
+.footer-brand p {
+    max-width: 300px;
+    color: #C7B9AE !important;
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+.footer-contact {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.footer-contact li {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #C7B9AE !important;
+    font-size: 13px;
+}
+
+.footer-contact li i {
+    color: #F47721 !important;
+    font-size: 14px;
+}
+
+.footer-contact .text-orange {
+    color: #F47721 !important;
+    font-weight: 700;
+}
+
+.footer-contact a {
+    color: #FFFFFF !important;
+    text-decoration: none;
+}
+
+.footer-contact a:hover {
+    color: #F47721 !important;
+}
+
+.footer-column h3 {
+    margin-bottom: 4px;
+    color: #FFFFFF !important;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.footer-column a {
+    color: #C7B9AE !important;
+    font-size: 13px;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+.footer-column a:hover,
+.footer-column a.active,
+.footer-bottom-links a:hover,
+.footer-bottom-links a.active {
+    color: #F47721 !important;
+}
+
+.footer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    max-width: 1450px;
+    margin: 36px auto 0;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    color: #C7B9AE !important;
+    font-size: 12px;
+}
+
+.footer-bottom-links {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+}
+
+.footer-bottom-links a {
+    color: #C7B9AE !important;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+@media (max-width: 1099px) {
+    .footer-container {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .footer-container {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+<footer class="footer">
+    <div class="footer-container">
+        <!-- Cột 1: Thương hiệu & Liên hệ -->
+        <div class="footer-brand">
+            <a href="${ctx}/" class="footer-logo">
+                <span class="footer-logo-badge">
+                    <i class="fi fi-rr-pets"></i>
+                </span>
+                <span>PetFood</span>
+            </a>
+            <p>Hệ thống dinh dưỡng và chăm sóc thú cưng cao cấp hàng đầu Việt Nam.</p>
+
+            <ul class="footer-contact">
+                <li>
+                    <i class="fi fi-rr-phone-call"></i>
+                    <span>Hotline: <strong class="text-orange">1900 6868</strong></span>
+                </li>
+                <li>
+                    <i class="fi fi-rr-envelope"></i>
+                    <span>Email: <a href="mailto:hotro@petfood.vn">hotro@petfood.vn</a></span>
+                </li>
+                <li class="contact-muted">
+                    <i class="fi fi-rr-clock-three"></i>
+                    <span>Thời gian hỗ trợ: 8:00 - 21:00 hàng ngày</span>
+                </li>
+            </ul>
+        </div>
+
+        <!-- Cột 2: Mua hàng -->
+        <div class="footer-column">
+            <h3>Mua hàng</h3>
+            <a href="${ctx}/products?species=DOG" class="${activePage == 'dog' ? 'active' : ''}">Thức ăn cho chó</a>
+            <a href="${ctx}/products?species=CAT" class="${activePage == 'cat' ? 'active' : ''}">Thức ăn cho mèo</a>
+            <a href="${ctx}/products?category=pate-treats" class="${activePage == 'pate' ? 'active' : ''}">Pate &amp; treats thưởng</a>
+            <a href="${ctx}/flash-sale" class="${activePage == 'flash-sale' ? 'active' : ''}">Flash Sale xả kho</a>
+        </div>
+
+        <!-- Cột 3: Hỗ trợ -->
+        <div class="footer-column">
+            <h3>Hỗ trợ</h3>
+            <a href="${ctx}/policies/return" class="${activePage == 'policy-return' ? 'active' : ''}">Chính sách đổi trả trong 3 ngày</a>
+            <a href="${ctx}/policies/expiry" class="${activePage == 'policy-expiry' ? 'active' : ''}">Cam kết hạn dùng tối thiểu 90 ngày</a>
+            <a href="${ctx}/policies/shipping" class="${activePage == 'policy-shipping' ? 'active' : ''}">Chính sách giao hàng hỏa tốc 2H</a>
+            <a href="${ctx}/policies/guide" class="${activePage == 'guide' ? 'active' : ''}">Hướng dẫn mua hàng &amp; thanh toán</a>
+        </div>
+
+        <!-- Cột 4: Tài khoản -->
+        <div class="footer-column">
+            <h3>Tài khoản</h3>
+            <a href="${ctx}/profile" class="${activePage == 'profile' ? 'active' : ''}">Thông tin tài khoản</a>
+            <a href="${ctx}/orders" class="${activePage == 'orders' ? 'active' : ''}">Lịch sử đơn hàng</a>
+            <a href="${ctx}/profile?tab=tier" class="${activePage == 'vip' ? 'active' : ''}">Thành viên VIP PetClub</a>
+        </div>
+    </div>
+
+    <!-- Dòng bản quyền dưới cùng -->
+    <div class="footer-bottom">
+        <span>&copy; 2026 PetFood. All rights reserved.</span>
+        <div class="footer-bottom-links">
+            <a href="${ctx}/terms" class="${activePage == 'terms' ? 'active' : ''}">Điều khoản dịch vụ</a>
+            <a href="${ctx}/privacy" class="${activePage == 'privacy' ? 'active' : ''}">Chính sách bảo mật</a>
+            <a href="${ctx}/partnership" class="${activePage == 'partnership' ? 'active' : ''}">Hợp tác cùng PetFood</a>
+        </div>
+    </div>
+</footer>

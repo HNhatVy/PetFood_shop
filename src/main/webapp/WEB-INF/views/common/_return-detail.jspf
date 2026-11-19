@@ -1,0 +1,147 @@
+<%@ page pageEncoding="UTF-8" %>
+<%@ taglib prefix="c" uri="jakarta.tags.core" %>
+<%@ taglib prefix="fmt" uri="jakarta.tags.fmt" %>
+
+<style>
+    .rd-section-title { font-size: 15px; font-weight: 700; color: var(--text-primary, #3d3028); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    .rd-table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+    .rd-table th { background: #fdfbf7; border-bottom: 2px solid var(--border-card, #f4e3c9); padding: 10px 12px; text-align: left; color: var(--text-primary, #3d3028); font-weight: 700; white-space: nowrap; }
+    .rd-table td { border-bottom: 1px solid var(--border-search, #eadfd7); padding: 12px; text-align: left; vertical-align: middle; }
+    .rd-table .num { text-align: right; white-space: nowrap; }
+    .rd-table .col-inspect { min-width: 160px; line-height: 1.4; }
+    .product-thumb-img { width: 60px; height: 60px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border-search, #eadfd7); background: #fff; }
+    .rd-media-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+    .rd-media-grid img, .rd-media-grid video { width: 110px; height: 110px; object-fit: cover; background: #000; border-radius: 10px; border: 1px solid var(--border-search, #eadfd7); }
+</style>
+
+<div class="card-box">
+    <div class="rd-section-title">
+        <div style="display: flex; align-items: center; gap: 8px;"><i class="fi fi-rr-box-alt" style="color: var(--primary-orange);"></i> Sản phẩm trong yêu cầu hoàn trả</div>
+        <div style="font-size:12px; font-weight:400; color:var(--text-secondary, #817872);">
+            Đơn hàng gốc: <strong>#FLY-${ret.orderId}</strong> (${ret.lines.size()} món)
+        </div>
+    </div>
+
+    <table class="rd-table">
+        <thead>
+            <tr>
+                <th>Sản phẩm</th>
+                <th class="num">SL trả / mua</th>
+                <th>Bao bì</th>
+                <th class="num">Tối đa hoàn</th>
+                <th class="col-inspect">Thẩm định & Ghi chú</th>
+                <th class="num">Hoàn thực tế</th>
+            </tr>
+        </thead>
+        <tbody>
+            <c:forEach var="l" items="${ret.lines}">
+                <tr>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            <img src="${ctx}${l.imageUrl}" class="product-thumb-img" alt="${l.productName}" onerror="this.src='https://via.placeholder.com/64/fff4df/f47721?text=PetFood'">
+                            <div>
+                                <strong style="color:var(--text-primary, #3d3028); font-size:14px;"><c:out value="${l.productName}"/></strong>
+                                <c:if test="${l.promotion}"><span style="color:#b91c1c; font-size:11px; font-weight:700;"> (Chương trình)</span></c:if>
+                                <c:if test="${l.flashSale}"><span style="color:#b91c1c; font-size:11px; font-weight:700;"> (Flash Sale)</span></c:if>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="num"><strong>${l.quantity}</strong> / ${l.orderedQty}</td>
+                    <td>
+                        <span style="display:inline-block; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600; background:${l.opened ? '#fee2e2' : '#dcfce7'}; color:${l.opened ? '#991b1b' : '#166534'};">
+                            ${l.opened ? 'Đã mở' : 'Nguyên vẹn'}
+                        </span>
+                    </td>
+                    <td class="num"><fmt:formatNumber value="${l.maxRefund}" type="number"/> ₫</td>
+                    
+                    <td class="col-inspect">
+                        <c:choose>
+                            <c:when test="${customerView}">
+                                <c:choose>
+                                    <c:when test="${not empty l.inspectionNote}">
+                                        <div style="font-size: 12px; color: #3d3028; background: #fdfbf7; border: 1px solid #eadfd7; padding: 6px 10px; border-radius: 8px; line-height: 1.4;">
+                                            <i class="fi fi-rr-edit"></i> <c:out value="${l.inspectionNote}"/>
+                                        </div>
+                                    </c:when>
+                                    <c:otherwise>
+                                        <span style="color: var(--text-secondary, #817872); font-size: 12px;">Đang kiểm tra</span>
+                                    </c:otherwise>
+                                </c:choose>
+                            </c:when>
+                            <c:otherwise>
+                                <c:if test="${not empty l.inspectionResult}">
+                                    <strong style="color: #059669; display: block; margin-bottom: 4px;">
+                                        <c:out value="${l.inspectionResult.label}"/>
+                                    </strong>
+                                </c:if>
+                                <c:if test="${not empty l.inspectionNote}">
+                                    <div style="font-size: 11px; color: #4b5563; background: #f3f4f6; padding: 4px 6px; border-radius: 4px;">
+                                        <i class="fi fi-rr-edit"></i> <c:out value="${l.inspectionNote}"/>
+                                    </div>
+                                </c:if>
+                            </c:otherwise>
+                        </c:choose>
+                    </td>
+
+                    <td class="num">
+                        <c:choose>
+                            <c:when test="${l.refundAmount != null}">
+                                <strong style="color:var(--primary-orange, #f47721); font-size:14px;">
+                                    <fmt:formatNumber value="${l.refundAmount}" type="number"/> ₫
+                                </strong>
+                            </c:when>
+                            <c:otherwise>—</c:otherwise>
+                        </c:choose>
+                    </td>
+                </tr>
+            </c:forEach>
+        </tbody>
+        <c:if test="${ret.status == 'INSPECTED' or ret.status == 'REFUNDED' or ret.status == 'CLOSED'}">
+            <tfoot>
+                <tr style="border-top: 2px solid var(--border-card, #f4e3c9);">
+                    <td colspan="5" class="num" style="font-size:14px;"><strong>TỔNG TIỀN HOÀN TRẢ:</strong></td>
+                    <td class="num" style="font-size:16px; color:var(--primary-orange, #f47721);">
+                        <strong><fmt:formatNumber value="${ret.refundTotal}" type="number"/> ₫</strong>
+                    </td>
+                </tr>
+            </tfoot>
+        </c:if>
+    </table>
+</div>
+
+<div class="card-box">
+    <h3 style="font-size:15px; font-weight:700; color:var(--text-primary, #3d3028); margin-bottom:12px; display: flex; align-items: center; gap: 8px;">
+        <i class="fi fi-rr-document" style="color: var(--primary-orange);"></i> Lý do & Hồ sơ minh chứng
+    </h3>
+
+    <div style="background:#fffbe0; border:1px solid #ffe0b2; padding:12px 16px; border-radius:10px; color:#b45309; font-size:13px; font-weight:700; margin-bottom:12px; display: flex; gap: 8px;">
+        <i class="fi fi-rr-triangle-warning" style="margin-top: 2px;"></i> LÝ DO HOÀN TRẢ: <c:out value="${ret.reason.label}"/>
+    </div>
+
+    <div style="font-size:12px; font-weight:700; color:var(--text-secondary, #817872); margin-bottom:6px;">
+        MÔ TẢ CHI TIẾT TỪ KHÁCH HÀNG:
+    </div>
+    <div style="background:#fdfbf7; border:1px solid var(--border-search, #eadfd7); padding:12px 16px; border-radius:10px; font-size:13px; color:var(--text-primary, #3d3028); margin-bottom:12px; line-height:1.5;">
+        "<c:out value="${empty ret.description ? 'Không có mô tả chi tiết' : ret.description}"/>"
+    </div>
+
+    <c:if test="${not empty ret.media}">
+        <div style="font-size:12px; font-weight:700; color:var(--text-secondary, #817872); margin-top:14px; margin-bottom:6px; display: flex; align-items: center; gap: 6px;">
+            <i class="fi fi-rr-camera"></i> ẢNH / VIDEO MINH CHỨNG (${ret.media.size()} FILES):
+        </div>
+        <div class="rd-media-grid">
+            <c:forEach var="m" items="${ret.media}">
+                <c:choose>
+                    <c:when test="${m.video}">
+                        <video src="${ctx}<c:out value='${m.url}'/>" controls preload="metadata"></video>
+                    </c:when>
+                    <c:otherwise>
+                        <a href="${ctx}<c:out value='${m.url}'/>" target="_blank">
+                            <img src="${ctx}<c:out value='${m.url}'/>" alt="Minh chứng">
+                        </a>
+                    </c:otherwise>
+                </c:choose>
+            </c:forEach>
+        </div>
+    </c:if>
+</div>
