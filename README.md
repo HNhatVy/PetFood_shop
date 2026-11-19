@@ -1,4 +1,4 @@
-# 🐾 PetFood Shop — Smart E-Commerce Platform
+#  PetFood Shop — Smart E-Commerce Platform
 
 [![Java](https://img.shields.io/badge/Java-21-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-4.1-6DB33F?style=for-the-badge&logo=spring-boot&logoColor=white)](https://spring.io/projects/spring-boot)
@@ -11,20 +11,18 @@ A full-stack e-commerce web platform for pet food & care products, engineered ar
 
 The system tracks every product batch by expiry date, guarantees **FEFO (First-Expired, First-Out)** fulfillment at checkout, automatically discounts near-expiry inventory through scheduled **Flash Sales**, and integrates an **AI Shopping Assistant** powered by Google Gemini to guide pet owners with nutritional recommendations from the live catalog.
 
-> 🎓 **Academic Project:** ISP392 (Software Development Project) — FPT University HCMC.
+> **Academic Project:** ISP392 (Software Development Project) — FPT University HCMC.
 
 ---
 
-## 🌟 Highlights & Key Innovations
-
-- **📦 Expiry-Aware Inventory (FEFO):** Products are tracked by distinct manufacturing lots. At checkout, stock is automatically allocated from the earliest safe expiring lot.
-- **⚡ Dynamic Near-Expiry Flash Sales:** Automated clearance campaigns dynamically discount lots based on remaining shelf life (e.g., 40% off for 30–89 days, 70% off for 21–29 days, unsold under 21 days).
-- **🤖 AI Shopping Assistant:** Integrated with Google Gemini API to offer real-time product recommendations grounded strictly in the store's active inventory, with strict guardrails against prompt injection and hallucinated products.
-- **💳 Real-World Integrations:**
+## Highlights & Key Innovations
+- **Dynamic Near-Expiry Flash Sales:** Automated clearance campaigns dynamically discount lots based on remaining shelf life (e.g., 40% off for 30–89 days, 70% off for 21–29 days, unsold under 21 days).
+- **I Shopping Assistant:** Integrated with Google Gemini API to offer real-time product recommendations grounded strictly in the store's active inventory, with strict guardrails against prompt injection and hallucinated products.
+- **Real-World Integrations:**
   - **VNPay Sandbox:** Secure digital payment with HMAC-SHA512 signed transactions and background verification.
   - **Giao Hàng Nhanh (GHN):** Automated waybill generation, live tracking webhooks, and order status sync.
   - **Geoapify Geocoding:** Dynamic shipping fee calculation based on store distance.
-- **🔄 Complete E-Commerce Lifecycle:** Cart & checkout, COD & VNPay payments, order tracking, returns with photographic evidence inspection, refunds, and loyalty tiers (Bronze / Silver / Gold / Diamond).
+- **Complete E-Commerce Lifecycle:** Cart & checkout, COD & VNPay payments, order tracking, returns with photographic evidence inspection, refunds, and loyalty tiers (Bronze / Silver / Gold / Diamond).
 
 ---
 
@@ -38,12 +36,6 @@ This project was developed by **Group 3 (ISP392)**.
 - **Core Shopping Experience:** Implemented the interactive **Shopping Cart (`cart.jsp`, `cart.css`)**, **Product Catalog & Filtering (`products.jsp`, `list.jsp`)**, and **Flash Sale Showcases (`flash-sale.jsp`)**.
 - **Design System & Styling:** Authored modular, clean CSS styling across the entire storefront (`home.css`, `products.css`, `cart.css`, `flash-sale.css`, `login.css`), ensuring responsive mobile-first behavior and seamless shopping flow.
 - **Frontend Integration:** Linked view layers with Spring Boot controllers and dynamic JSP/JSTL templates.
-
-### **Collaborators:**
-- **Trần Anh Khoa** ([@khoadauvang](https://github.com/khoadauvang)): Backend Architecture, Database Design, Payment, Shipping & Gemini AI Integrations.
-
----
-
 ## 🛠️ Tech Stack
 
 | Component | Technology |
@@ -56,7 +48,7 @@ This project was developed by **Group 3 (ISP392)**.
 
 ---
 
-## 🏗️ System Architecture
+##System Architecture
 
 ```mermaid
 flowchart LR
@@ -102,9 +94,9 @@ flowchart LR
 
 ---
 
-## 🎯 Role-Based Features
+## Role-Based Features
 
-### 🛒 1. Customer (Shopper)
+### 1. Customer (Shopper)
 - **Catalog & Smart Filter:** Browse items filtered by species (dog/cat), life stage, brand, category, and price range.
 - **Product Details:** High-res image gallery, stock availability, nearest expiry indicator, and verified buyer reviews.
 - **Shopping Cart & Checkout:** Real-time stock reservation, coupon/membership discounts, distance-based shipping fees, and COD / VNPay choices.
@@ -142,7 +134,7 @@ flowchart LR
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - **JDK 21** or later installed
@@ -168,54 +160,8 @@ petfood.ghn.shop-id=your_ghn_shop_id
 petfood.geocoding.geoapify-api-key=your_geoapify_key
 spring.mail.username=your_gmail_address
 spring.mail.password=your_gmail_app_password
-```
 
-### 3. Run the Application
-Open terminal in the project root and execute:
 
-```bash
-# Windows
-mvnw.cmd spring-boot:run
-
-# macOS / Linux
-./mvnw spring-boot:run
-```
-
-Access the application in your browser:
-```
-http://localhost:8080
-```
-
----
-
-## 📁 Project Structure
-
-```
-petfood_ISP392/
-├── .mvn/wrapper/               # Maven wrapper binaries & properties
-├── src/main/
-│   ├── java/com/isp392/petfood/
-│   │   ├── config/             # Spring Security, Web MVC, WebSocket config
-│   │   ├── controller/         # MVC Controllers & REST APIs
-│   │   ├── dto/                # Request forms, view models & response DTOs
-│   │   ├── entity/             # JPA entity definitions & mapping
-│   │   ├── enums/              # Order status, user roles, sale types
-│   │   ├── repository/         # Spring Data JPA repositories
-│   │   ├── security/           # OAuth2 handlers, auth filters & rules
-│   │   └── service/            # Core business services, API clients & cron jobs
-│   ├── resources/
-│   │   ├── application.properties
-│   │   └── static/             # Static styles and images
-│   └── webapp/
-│       ├── css/                # Custom CSS styling (home, cart, products, flash-sale)
-│       ├── images/             # Product images and banner graphics
-│       └── WEB-INF/views/      # JSP templates (customer, staff, admin, auth, support)
-├── pom.xml                     # Maven dependencies & build plugins
-└── README.md                   # Project documentation
-```
-
----
-
-## 📄 License & Attribution
+## License & Attribution
 
 This project was developed for educational purposes as part of the ISP392 course at FPT University. All rights reserved by the development team.
